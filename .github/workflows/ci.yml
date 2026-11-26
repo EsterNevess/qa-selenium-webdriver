@@ -1,0 +1,98 @@
+name: Testes Selenium
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  selenium:
+    runs-on: ubuntu-24.04  # fixo: o rotulo "latest" muda de versão do Ubuntu sem aviso
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      # O Chrome já vem instalado no runner e o Selenium Manager baixa o
+      # chromedriver da versão certa; não há passo de instalação de navegador.
+      # continue-on-error para o relatório ser publicado mesmo quando um
+      # teste falha. É exatamente aí que o relatório mais importa.
+      - name: Executar os testes
+        id: testes
+        continue-on-error: true
+        run: pytest
+
+      - name: Recuperar o histórico do Allure
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          ref: gh-pages
+          path: gh-pages
+
+      # O histórico fica na pasta `history` do relatório anterior. Sem copiá-lo
+      # para os resultados novos, cada execução nasce sem memória e o gráfico
+      # de tendência não existe.
+      - name: Preservar o histórico
+        if: always()
+        run: |
+          mkdir -p allure-results
+          if [ -d gh-pages/history ]; then
+            cp -r gh-pages/history allure-results/
+            echo "Histórico recuperado"
+          else
+            echo "Sem histórico anterior (primeira execução)"
+          fi
+
+      - name: Preparar Java (o Allure roda sobre a JVM)
+        if: always()
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Instalar o Allure
+        if: always()
+        run: npm install -g allure-commandline --silent
+
+      - name: Gerar o relatório
+        if: always()
+        run: allure generate allure-results --clean -o allure-report
+
+      - name: Publicar o relatório no GitHub Pages
+        if: always()
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: allure-report
+
+      - name: Publicar evidências como artefato
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relatorio-selenium
+          path: |
+            relatorio.html
+            evidencias/
+            allure-report/
+          if-no-files-found: ignore
+
+      # O passo anterior sempre roda; este devolve o resultado real dos
+      # testes para o job, para que o selo do README não minta.
+      - name: Refletir o resultado dos testes
+        if: steps.testes.outcome == 'failure'
+        run: |
+          echo "Um ou mais testes falharam. Veja o relatório publicado."
+          exit 1
